@@ -1,0 +1,93 @@
+from django.urls import path
+from apps.AutenticacionySeguridad.views.auth_view import (
+    LoginView,
+    MobileLoginView,
+    MobileRegisterView,
+    LogoutView,
+    MeView,
+    ComponentesView,
+    AuthRootView,
+    PublicVeterinariaListView,
+    PublicVeterinariaView,
+    ForgotPasswordView,
+    ResetPasswordView,
+    ChangePasswordView,
+    PublicTrialSignupView,
+    PublicDemoCheckoutStartView,
+    PublicDemoCheckoutConfirmView,
+    StripeWebhookView,
+    DemoUpgradeStartView,
+    DemoUpgradeConfirmView,
+)
+from .views.perfil_views import (
+    UsuarioListCreateView,
+    UsuarioDetailView,
+    UsuarioClienteListView,
+    UsuarioActivarView,
+)
+from .views.bitacora_view import (
+    BitacoraListView,
+    BitacoraDetailView,
+)
+from .views.grupo_views import (
+    GrupoUsuarioListCreateView,
+    GrupoUsuarioDetailView,
+    GrupoPermisoComponenteListCreateView,
+    GrupoPermisoComponenteDetailView,
+)
+from .views.componente_sistema_views import ComponenteSistemaListView
+from .views.usuario_grupo_view import (
+    UsuarioGrupoListCreateView,
+    UsuarioGrupoDeleteView,
+)
+from .views.backup_views import (
+    BackupRestoreViewSet,
+    BackupCreateView,
+    BackupRestoreView,
+    BackupConfigRetrieveUpdateView,
+)
+
+urlpatterns = [
+    path("", AuthRootView.as_view(), name="auth-root"),
+    path("login/", LoginView.as_view(), name="auth-login"),
+    path("mobile/login/", MobileLoginView.as_view(), name="auth-mobile-login"),
+    path("mobile/register/", MobileRegisterView.as_view(), name="auth-mobile-register"),
+    path("logout/", LogoutView.as_view(), name="auth-logout"),
+    path("forgot-password/", ForgotPasswordView.as_view(), name="auth-forgot-password"),
+    path("reset-password/", ResetPasswordView.as_view(), name="auth-reset-password"),
+    path("change-password/", ChangePasswordView.as_view(), name="auth-change-password"),
+    path("me/", MeView.as_view(), name="auth-me"),
+    path("componentes/", ComponentesView.as_view(), name="auth-componentes"),
+    path("public/veterinarias/", PublicVeterinariaListView.as_view(), name="public-veterinaria-list"),
+    path("public/veterinarias/<slug:slug>/", PublicVeterinariaView.as_view(), name="public-veterinaria-detail"),
+    path("public/trial-signup/", PublicTrialSignupView.as_view(), name="public-trial-signup"),
+    path("public/checkout-demo/start/", PublicDemoCheckoutStartView.as_view(), name="public-checkout-demo-start"),
+    path("public/checkout-demo/confirm/", PublicDemoCheckoutConfirmView.as_view(), name="public-checkout-demo-confirm"),
+    path("public/stripe/webhook/", StripeWebhookView.as_view(), name="public-stripe-webhook"),
+    path("billing/upgrade-demo/start/", DemoUpgradeStartView.as_view(), name="billing-upgrade-demo-start"),
+    path("billing/upgrade-demo/confirm/", DemoUpgradeConfirmView.as_view(), name="billing-upgrade-demo-confirm"),
+
+    path('usuarios/', UsuarioListCreateView.as_view(), name='usuario-list-create'),
+    path('usuarios/clientes/', UsuarioClienteListView.as_view(), name='usuario-clientes-list'),
+    path('usuarios/<int:pk>/', UsuarioDetailView.as_view(), name='usuario-detail'),
+    path('usuarios/<int:pk>/activar/', UsuarioActivarView.as_view(), name='usuario-activar'),
+    
+    path("usuarios-grupos/", UsuarioGrupoListCreateView.as_view(), name="usuario-grupo-list-create"),
+    path("usuarios-grupos/<int:pk>/", UsuarioGrupoDeleteView.as_view(), name="usuario-grupo-delete"),
+
+    path("bitacora/", BitacoraListView.as_view(), name="bitacora-list"),
+    path("bitacora/<int:pk>/", BitacoraDetailView.as_view(), name="bitacora-detail"),
+
+    path("grupos/", GrupoUsuarioListCreateView.as_view(), name="grupo-usuario-list-create"),
+    path("grupos/<int:pk>/", GrupoUsuarioDetailView.as_view(), name="grupo-usuario-detail"),
+
+    path("grupos-permisos/", GrupoPermisoComponenteListCreateView.as_view(), name="grupo-permiso-list-create"),
+    path("grupos-permisos/<int:pk>/", GrupoPermisoComponenteDetailView.as_view(), name="grupo-permiso-detail"),
+
+    path("componentes-sistema/", ComponenteSistemaListView.as_view(), name="componentes-sistema-list"),
+
+    path("backups/", BackupRestoreViewSet.as_view({"get": "list"}), name="backup-list"),
+    path("backups/create/", BackupCreateView.as_view(), name="backup-create"),
+    path("backups/<int:backup_id>/restore/", BackupRestoreView.as_view(), name="backup-restore"),
+    path("backups/config/", BackupConfigRetrieveUpdateView.as_view(), name="backup-config"),
+]

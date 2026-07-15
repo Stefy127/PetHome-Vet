@@ -1,0 +1,16 @@
+export {
+  logisticaApi as rutasProgramadasApi,
+  useAddDetalleRutaMutation,
+  useCreateRutaProgramadaMutation,
+  useCreateUnidadMovilMutation,
+  useDeleteRutaProgramadaMutation,
+  useDeleteUnidadMovilMutation,
+  useGetAsignacionesUnidadesQuery,
+  useGetMisRutasQuery,
+  useGetRutasProgramadasQuery,
+  useGetUnidadesMovilesQuery,
+  useRemoveDetalleRutaMutation,
+  useUpdateDetalleRutaMutation,
+  useUpdateRutaProgramadaMutation,
+  useUpdateUnidadMovilMutation,
+} from '#/app/features/UnidadesMovilesLogistica/store/logisticaApi'

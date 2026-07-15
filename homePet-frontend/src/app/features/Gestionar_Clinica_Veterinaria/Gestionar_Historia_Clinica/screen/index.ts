@@ -1,0 +1,1 @@
+export * from "./Gestionar_Historia_Clinica"

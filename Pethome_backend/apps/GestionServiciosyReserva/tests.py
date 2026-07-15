@@ -1,0 +1,983 @@
+from datetime import datetime, time, timedelta
+
+from django.test import override_settings
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+from apps.AutenticacionySeguridad.enums.roles import RoleEnum
+from apps.AutenticacionySeguridad.models import (
+	ComponenteSistema,
+	GrupoPermisoComponente,
+	GrupoUsuario,
+	Perfil,
+	Rol,
+	User,
+	UsuarioGrupo,
+	Veterinaria,
+)
+from apps.GestionClientesyMascotas.models import Mascota
+from apps.GestionServiciosyReserva.models import (
+	CategoriaServicio,
+	Cita,
+	DetalleRuta,
+	Especie,
+	PrecioServicio,
+	Raza,
+	RutaProgramada,
+	Servicio,
+	UnidadMovil,
+	UnidadMovilAsignacion,
+	UnidadMovilAsignacionPersonal,
+)
+from apps.NotificacionesySeguimiento.models import Pedido, Seguimiento
+
+FERNET_TEST_KEY = "y-8vRXvZL5t7I8S_dZd2a0B7aKXzH_kL8BkpE9SLiW8="
+
+
+@override_settings(BITACORA_SECRET_KEYS=[FERNET_TEST_KEY])
+class CitasRBACTests(APITestCase):
+	def setUp(self):
+		self.vet = Veterinaria.objects.create(
+			nombre="Vet Servicios",
+			slug="vet-servicios",
+			nit="900",
+			correo="servicios@example.com",
+		)
+		self.rol_admin = Rol.objects.create(
+			nombre=RoleEnum.ADMIN.value,
+			descripcion="Administrador",
+		)
+		self.rol_client = Rol.objects.create(
+			nombre=RoleEnum.CLIENT.value,
+			descripcion="Cliente",
+		)
+
+		self.user = User.objects.create(
+			correo="admin-servicios@example.com",
+			role=self.rol_admin,
+			veterinaria=self.vet,
+			is_active=True,
+			is_staff=True,
+			is_superuser=False,
+		)
+		self.user.set_password("Admin12345!")
+		self.user.save()
+
+		self.client_user = User.objects.create(
+			correo="cliente-servicios@example.com",
+			role=self.rol_client,
+			veterinaria=self.vet,
+			is_active=True,
+			is_staff=False,
+			is_superuser=False,
+		)
+
+		self.component = ComponenteSistema.objects.create(
+			codigo="SERV_CITAS",
+			nombre="Citas",
+			tipo="FORMULARIO",
+			modulo="servicios",
+			plataforma="WEB",
+			estado=True,
+		)
+
+		self.grupo = GrupoUsuario.objects.create(
+			nombre="Recepcionistas",
+			descripcion="Grupo de prueba",
+			veterinaria=self.vet,
+		)
+		UsuarioGrupo.objects.create(usuario=self.user, grupo=self.grupo)
+
+		self.especie = Especie.objects.create(nombre="Canino")
+		self.raza = Raza.objects.create(nombre="Labrador", especie=self.especie)
+		self.mascota = Mascota.objects.create(
+			usuario=self.client_user,
+			especie=self.especie,
+			raza=self.raza,
+			veterinaria=self.vet,
+			nombre="Firulais",
+		)
+		self.categoria = CategoriaServicio.objects.create(
+			nombre="Consulta",
+			descripcion="General",
+			veterinaria=self.vet,
+		)
+		self.servicio = Servicio.objects.create(
+			nombre="Consulta General",
+			descripcion="General",
+			categoria=self.categoria,
+			duracion_estimada=30,
+			disponible_domicilio=True,
+			veterinaria=self.vet,
+		)
+		self.precio = PrecioServicio.objects.create(
+			servicio=self.servicio,
+			variacion="General",
+			modalidad="CLINICA",
+			precio=50,
+			descripcion="Precio base",
+			veterinaria=self.vet,
+		)
+
+	def _grant_permissions(self, *, puede_ver=False, puede_crear=False):
+		GrupoPermisoComponente.objects.create(
+			grupo=self.grupo,
+			componente=self.component,
+			puede_ver=puede_ver,
+			puede_crear=puede_crear,
+			puede_editar=False,
+			puede_eliminar=False,
+			estado=True,
+		)
+
+	def test_citas_view_only_denies_create(self):
+		self._grant_permissions(puede_ver=True, puede_crear=False)
+		self.client.force_login(self.user)
+
+		list_response = self.client.get("/api/gestion/servicios/citas/")
+		self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+
+		create_response = self.client.post("/api/gestion/servicios/citas/", {}, format="json")
+		self.assertEqual(create_response.status_code, status.HTTP_403_FORBIDDEN)
+
+	def test_citas_create_allowed_with_permission(self):
+		self._grant_permissions(puede_ver=True, puede_crear=True)
+		self.client.force_login(self.user)
+
+		payload = {
+			"mascota": self.mascota.id_mascota,
+			"servicio": self.servicio.id_servicio,
+			"precio_servicio": self.precio.id_precio,
+			"fecha_programada": (timezone.localdate() + timedelta(days=1)).isoformat(),
+			"hora_inicio": time(10, 0).isoformat(),
+			"modalidad": "CLINICA",
+			"descripcion": "Consulta de rutina",
+		}
+
+		response = self.client.post(
+			"/api/gestion/servicios/citas/",
+			payload,
+			format="json",
+		)
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
+@override_settings(BITACORA_SECRET_KEYS=[FERNET_TEST_KEY])
+class CatalogoServiciosSaaSTests(APITestCase):
+	def setUp(self):
+		self.vet_a = Veterinaria.objects.create(
+			nombre="Vet Catalogo A",
+			slug="vet-catalogo-a",
+			nit="901",
+			correo="catalogo-a@example.com",
+		)
+		self.vet_b = Veterinaria.objects.create(
+			nombre="Vet Catalogo B",
+			slug="vet-catalogo-b",
+			nit="902",
+			correo="catalogo-b@example.com",
+		)
+		self.rol_admin = Rol.objects.create(
+			nombre=RoleEnum.ADMIN.value,
+			descripcion="Administrador",
+		)
+		self.admin_a = User.objects.create(
+			correo="admin-catalogo-a@example.com",
+			role=self.rol_admin,
+			veterinaria=self.vet_a,
+			is_active=True,
+			is_staff=True,
+			is_superuser=True,
+		)
+		self.admin_a.set_password("Admin12345!")
+		self.admin_a.save()
+
+		self.comp_cat = ComponenteSistema.objects.create(
+			codigo="SERV_CATEGORIAS",
+			nombre="Categorias",
+			tipo="MODULO",
+			modulo="SERVICIOS",
+			plataforma="WEB",
+			estado=True,
+		)
+		self.comp_srv = ComponenteSistema.objects.create(
+			codigo="SERV_SERVICIOS",
+			nombre="Servicios",
+			tipo="MODULO",
+			modulo="SERVICIOS",
+			plataforma="WEB",
+			estado=True,
+		)
+		self.comp_pre = ComponenteSistema.objects.create(
+			codigo="SERV_PRECIOS",
+			nombre="Precios",
+			tipo="MODULO",
+			modulo="SERVICIOS",
+			plataforma="WEB",
+			estado=True,
+		)
+		self.group = GrupoUsuario.objects.create(
+			nombre="Catalogo Admin",
+			descripcion="Permisos catálogo",
+			veterinaria=self.vet_a,
+		)
+		UsuarioGrupo.objects.create(usuario=self.admin_a, grupo=self.group)
+		for comp in [self.comp_cat, self.comp_srv, self.comp_pre]:
+			GrupoPermisoComponente.objects.create(
+				grupo=self.group,
+				componente=comp,
+				puede_ver=True,
+				puede_crear=True,
+				puede_editar=True,
+				puede_eliminar=True,
+				estado=True,
+			)
+
+		self.cat_b = CategoriaServicio.objects.create(
+			nombre="Categoria B",
+			descripcion="Otra vet",
+			veterinaria=self.vet_b,
+		)
+		self.serv_b = Servicio.objects.create(
+			nombre="Servicio B",
+			descripcion="Otra vet",
+			categoria=self.cat_b,
+			duracion_estimada=30,
+			disponible_domicilio=True,
+			veterinaria=self.vet_b,
+		)
+
+	def test_catalogo_is_tenant_scoped_and_price_validation_works(self):
+		self.client.force_login(self.admin_a)
+
+		cat_create = self.client.post(
+			"/api/gestion/servicios/categorias-servicio/",
+			{"nombre": "Consulta", "descripcion": "General", "estado": True},
+			format="json",
+		)
+		self.assertEqual(cat_create.status_code, status.HTTP_201_CREATED)
+		cat_id = cat_create.data["id_categoria"]
+
+		srv_create = self.client.post(
+			"/api/gestion/servicios/",
+			{
+				"nombre": "Consulta General",
+				"descripcion": "Atencion basica",
+				"categoria": cat_id,
+				"duracion_estimada": 30,
+				"disponible_domicilio": True,
+				"estado": True,
+			},
+			format="json",
+		)
+		self.assertEqual(srv_create.status_code, status.HTTP_201_CREATED)
+		srv_id = srv_create.data["id_servicio"]
+
+		list_cat = self.client.get("/api/gestion/servicios/categorias-servicio/")
+		self.assertEqual(list_cat.status_code, status.HTTP_200_OK)
+		self.assertTrue(all(c["id_categoria"] != self.cat_b.id_categoria for c in list_cat.data))
+
+		list_srv = self.client.get("/api/gestion/servicios/")
+		self.assertEqual(list_srv.status_code, status.HTTP_200_OK)
+		self.assertTrue(all(s["id_servicio"] != self.serv_b.id_servicio for s in list_srv.data))
+
+		price_invalid = self.client.post(
+			"/api/gestion/servicios/precios-servicio/",
+			{
+				"servicio": srv_id,
+				"variacion": "Base",
+				"modalidad": "CLINICA",
+				"precio": 0,
+				"descripcion": "Invalido",
+				"estado": True,
+			},
+			format="json",
+		)
+		self.assertEqual(price_invalid.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertIn("precio", price_invalid.data)
+
+
+@override_settings(BITACORA_SECRET_KEYS=[FERNET_TEST_KEY])
+class CitasAgendaSaaSTests(APITestCase):
+	def setUp(self):
+		self.vet_a = Veterinaria.objects.create(
+			nombre="Vet Agenda A",
+			slug="vet-agenda-a",
+			nit="903",
+			correo="agenda-a@example.com",
+		)
+		self.vet_b = Veterinaria.objects.create(
+			nombre="Vet Agenda B",
+			slug="vet-agenda-b",
+			nit="904",
+			correo="agenda-b@example.com",
+		)
+		self.rol_admin = Rol.objects.create(nombre=RoleEnum.ADMIN.value, descripcion="Admin")
+		self.rol_client = Rol.objects.create(nombre=RoleEnum.CLIENT.value, descripcion="Cliente")
+
+		self.admin_a = User.objects.create(
+			correo="admin-agenda-a@example.com",
+			role=self.rol_admin,
+			veterinaria=self.vet_a,
+			is_active=True,
+			is_staff=True,
+			is_superuser=True,
+		)
+		self.admin_a.set_password("Admin12345!")
+		self.admin_a.save()
+
+		self.client_a = User.objects.create(
+			correo="cliente-agenda-a@example.com",
+			role=self.rol_client,
+			veterinaria=self.vet_a,
+			is_active=True,
+			is_staff=False,
+			is_superuser=False,
+		)
+		self.client_b = User.objects.create(
+			correo="cliente-agenda-b@example.com",
+			role=self.rol_client,
+			veterinaria=self.vet_b,
+			is_active=True,
+			is_staff=False,
+			is_superuser=False,
+		)
+
+		self.comp_citas = ComponenteSistema.objects.create(
+			codigo="SERV_CITAS",
+			nombre="Citas",
+			tipo="MODULO",
+			modulo="SERVICIOS",
+			plataforma="WEB",
+			estado=True,
+		)
+		self.grp_admin_a = GrupoUsuario.objects.create(
+			nombre="Agenda Admin A",
+			descripcion="Permisos agenda admin A",
+			veterinaria=self.vet_a,
+		)
+		UsuarioGrupo.objects.create(usuario=self.admin_a, grupo=self.grp_admin_a)
+		GrupoPermisoComponente.objects.create(
+			grupo=self.grp_admin_a,
+			componente=self.comp_citas,
+			puede_ver=True,
+			puede_crear=True,
+			puede_editar=True,
+			puede_eliminar=True,
+			estado=True,
+		)
+		self.grp_client_a = GrupoUsuario.objects.create(
+			nombre="Agenda Cliente A",
+			descripcion="Permisos agenda cliente A",
+			veterinaria=self.vet_a,
+		)
+		UsuarioGrupo.objects.create(usuario=self.client_a, grupo=self.grp_client_a)
+		GrupoPermisoComponente.objects.create(
+			grupo=self.grp_client_a,
+			componente=self.comp_citas,
+			puede_ver=True,
+			puede_crear=True,
+			estado=True,
+		)
+
+		self.especie = Especie.objects.create(nombre="Felino")
+		self.raza = Raza.objects.create(nombre="Siames", especie=self.especie)
+		self.mascota_a = Mascota.objects.create(
+			usuario=self.client_a,
+			especie=self.especie,
+			raza=self.raza,
+			veterinaria=self.vet_a,
+			nombre="Mishi A",
+		)
+		self.mascota_b = Mascota.objects.create(
+			usuario=self.client_b,
+			especie=self.especie,
+			raza=self.raza,
+			veterinaria=self.vet_b,
+			nombre="Mishi B",
+		)
+		self.cat_a = CategoriaServicio.objects.create(
+			nombre="Consulta Agenda A",
+			descripcion="Consulta",
+			veterinaria=self.vet_a,
+		)
+		self.cat_b = CategoriaServicio.objects.create(
+			nombre="Consulta Agenda B",
+			descripcion="Consulta",
+			veterinaria=self.vet_b,
+		)
+		self.serv_a = Servicio.objects.create(
+			nombre="Servicio Agenda A",
+			descripcion="Servicio A",
+			categoria=self.cat_a,
+			duracion_estimada=30,
+			disponible_domicilio=True,
+			veterinaria=self.vet_a,
+		)
+		self.serv_b = Servicio.objects.create(
+			nombre="Servicio Agenda B",
+			descripcion="Servicio B",
+			categoria=self.cat_b,
+			duracion_estimada=30,
+			disponible_domicilio=True,
+			veterinaria=self.vet_b,
+		)
+		self.precio_a = PrecioServicio.objects.create(
+			servicio=self.serv_a,
+			variacion="Base A",
+			modalidad="CLINICA",
+			precio=80,
+			descripcion="Precio A",
+			veterinaria=self.vet_a,
+		)
+		self.precio_b = PrecioServicio.objects.create(
+			servicio=self.serv_b,
+			variacion="Base B",
+			modalidad="CLINICA",
+			precio=90,
+			descripcion="Precio B",
+			veterinaria=self.vet_b,
+		)
+
+	def _future_date(self):
+		return (timezone.localdate() + timedelta(days=1)).isoformat()
+
+	def test_cu11_cliente_cannot_request_cita_for_other_tenant_mascota(self):
+		self.client.force_login(self.client_a)
+		response = self.client.post(
+			"/api/gestion/servicios/citas/",
+			{
+				"mascota": self.mascota_b.id_mascota,
+				"servicio": self.serv_a.id_servicio,
+				"precio_servicio": self.precio_a.id_precio,
+				"fecha_programada": self._future_date(),
+				"hora_inicio": "10:00:00",
+				"modalidad": "CLINICA",
+			},
+			format="json",
+		)
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+	def test_cu11_cliente_cannot_use_service_from_other_tenant(self):
+		self.client.force_login(self.client_a)
+		response = self.client.post(
+			"/api/gestion/servicios/citas/",
+			{
+				"mascota": self.mascota_a.id_mascota,
+				"servicio": self.serv_b.id_servicio,
+				"precio_servicio": self.precio_b.id_precio,
+				"fecha_programada": self._future_date(),
+				"hora_inicio": "11:00:00",
+				"modalidad": "CLINICA",
+			},
+			format="json",
+		)
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+	def test_cu12_admin_can_create_and_cancel_reserva(self):
+		self.client.force_login(self.admin_a)
+		create = self.client.post(
+			"/api/gestion/servicios/citas/",
+			{
+				"mascota": self.mascota_a.id_mascota,
+				"servicio": self.serv_a.id_servicio,
+				"precio_servicio": self.precio_a.id_precio,
+				"fecha_programada": self._future_date(),
+				"hora_inicio": "12:00:00",
+				"modalidad": "CLINICA",
+			},
+			format="json",
+		)
+		self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+		cita_id = create.data["id_cita"]
+
+		cancel = self.client.delete(f"/api/gestion/servicios/citas/{cita_id}/")
+		self.assertEqual(cancel.status_code, status.HTTP_200_OK)
+		self.assertEqual(cancel.data["estado"], "CANCELADA")
+
+	def test_cu13_disponibilidad_and_conflicto_are_tenant_scoped(self):
+		self.client.force_login(self.admin_a)
+		create = self.client.post(
+			"/api/gestion/servicios/citas/",
+			{
+				"mascota": self.mascota_a.id_mascota,
+				"servicio": self.serv_a.id_servicio,
+				"precio_servicio": self.precio_a.id_precio,
+				"fecha_programada": self._future_date(),
+				"hora_inicio": "13:00:00",
+				"modalidad": "CLINICA",
+			},
+			format="json",
+		)
+		self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+		agenda = self.client.get(f"/api/gestion/servicios/agenda/?fecha={self._future_date()}")
+		self.assertEqual(agenda.status_code, status.HTTP_200_OK)
+		self.assertGreaterEqual(len(agenda.data["citas_ocupadas"]), 1)
+
+		conflict = self.client.get(
+			f"/api/gestion/servicios/agenda/validar/?fecha={self._future_date()}&hora_inicio=13:00:00&hora_fin=13:30:00"
+		)
+		self.assertEqual(conflict.status_code, status.HTTP_200_OK)
+		self.assertFalse(conflict.data["disponible"])
+
+
+@override_settings(BITACORA_SECRET_KEYS=[FERNET_TEST_KEY])
+class RutasProgramadasTests(APITestCase):
+	def setUp(self):
+		self.vet = Veterinaria.objects.create(
+			nombre="Vet Rutas",
+			slug="vet-rutas",
+			nit="905",
+			correo="rutas@example.com",
+		)
+		self.rol_admin = Rol.objects.create(nombre=RoleEnum.ADMIN.value, descripcion="Admin")
+		self.rol_veterinario = Rol.objects.create(
+			nombre=RoleEnum.VETERINARIAN.value,
+			descripcion="Veterinario",
+		)
+		self.rol_cliente = Rol.objects.create(nombre=RoleEnum.CLIENT.value, descripcion="Cliente")
+
+		self.admin = User.objects.create(
+			correo="admin-rutas@example.com",
+			role=self.rol_admin,
+			veterinaria=self.vet,
+			is_active=True,
+			is_staff=True,
+			is_superuser=True,
+		)
+		self.veterinario = User.objects.create(
+			correo="vet-rutas@example.com",
+			role=self.rol_veterinario,
+			veterinaria=self.vet,
+			is_active=True,
+		)
+		self.cliente_user = User.objects.create(
+			correo="cliente-rutas@example.com",
+			role=self.rol_cliente,
+			veterinaria=self.vet,
+			is_active=True,
+		)
+		Perfil.objects.create(
+			usuario=self.cliente_user,
+			nombre="Maria Lopez",
+			telefono="70000000",
+		)
+
+		self.especie = Especie.objects.create(nombre="Canino")
+		self.raza = Raza.objects.create(nombre="Mestizo", especie=self.especie)
+		self.mascota = Mascota.objects.create(
+			usuario=self.cliente_user,
+			especie=self.especie,
+			raza=self.raza,
+			veterinaria=self.vet,
+			nombre="Toby",
+		)
+		self.categoria = CategoriaServicio.objects.create(
+			nombre="Domicilio",
+			descripcion="Categoria domicilio",
+			veterinaria=self.vet,
+		)
+		self.servicio = Servicio.objects.create(
+			nombre="Vacunacion",
+			descripcion="Vacuna a domicilio",
+			categoria=self.categoria,
+			duracion_estimada=40,
+			disponible_domicilio=True,
+			veterinaria=self.vet,
+		)
+		self.precio = PrecioServicio.objects.create(
+			servicio=self.servicio,
+			variacion="Base",
+			modalidad="DOMICILIO",
+			precio=100,
+			descripcion="Precio domicilio",
+			veterinaria=self.vet,
+		)
+		self.fecha = timezone.localdate() + timedelta(days=1)
+		self.cita_domicilio = Cita.objects.create(
+			usuario=self.cliente_user,
+			mascota=self.mascota,
+			servicio=self.servicio,
+			precio_servicio=self.precio,
+			fecha_programada=self.fecha,
+			hora_inicio=time(9, 0),
+			hora_fin=time(9, 40),
+			modalidad="DOMICILIO",
+			direccion_cita="-17.7833,-63.1821",
+			estado="CONFIRMADA",
+			veterinaria=self.vet,
+		)
+			self.cita_clinica = Cita.objects.create(
+				usuario=self.cliente_user,
+			mascota=self.mascota,
+			servicio=self.servicio,
+			precio_servicio=self.precio,
+			fecha_programada=self.fecha,
+			hora_inicio=time(10, 0),
+			hora_fin=time(10, 40),
+			modalidad="CLINICA",
+				estado="CONFIRMADA",
+				veterinaria=self.vet,
+			)
+			self.pedido_domicilio = Pedido.objects.create(
+				usuario=self.cliente_user,
+				veterinaria=self.vet,
+				direccion_entrega="-17.7799,-63.1777",
+				tipo_entrega="DOMICILIO",
+				estado_pedido="CONFIRMADO",
+				subtotal=65,
+				total=65,
+			)
+			Pedido.objects.filter(id_pedido=self.pedido_domicilio.id_pedido).update(
+				fecha_pedido=timezone.make_aware(datetime.combine(self.fecha, time(8, 15))),
+			)
+			self.pedido_domicilio.refresh_from_db()
+			self.pedido_ligado = Pedido.objects.create(
+				usuario=self.cliente_user,
+				veterinaria=self.vet,
+				cita=self.cita_domicilio,
+				direccion_entrega="-17.7833,-63.1821",
+				tipo_entrega="DOMICILIO",
+				estado_pedido="CONFIRMADO",
+				subtotal=100,
+				total=100,
+			)
+
+	def _crear_unidad_y_ruta(self):
+		self.client.force_login(self.admin)
+
+		unidad_response = self.client.post(
+			"/api/unidades-moviles/",
+			{
+				"nombre": "Movil 01",
+				"placa": "ABC-123",
+				"descripcion": "Unidad principal",
+			},
+			format="json",
+		)
+		self.assertEqual(unidad_response.status_code, status.HTTP_201_CREATED)
+
+		ruta_response = self.client.post(
+			"/api/rutas-programadas/",
+			{
+				"nombre": "Ruta Norte",
+				"fecha": self.fecha.isoformat(),
+				"estado": "PROGRAMADA",
+				"id_unidad": unidad_response.data["id_unidad"],
+				"id_veterinario": self.veterinario.id_usuario,
+			},
+			format="json",
+		)
+		self.assertEqual(ruta_response.status_code, status.HTTP_201_CREATED)
+		return unidad_response.data, ruta_response.data
+
+		def test_admin_can_create_route_and_assign_domicilio_cita(self):
+		_, ruta = self._crear_unidad_y_ruta()
+
+		detalle_response = self.client.post(
+			f"/api/rutas-programadas/{ruta['id_ruta']}/detalle/",
+			{
+				"id_cita": self.cita_domicilio.id_cita,
+				"orden": 1,
+				"hora_estimada": "09:00:00",
+			},
+			format="json",
+		)
+		self.assertEqual(detalle_response.status_code, status.HTTP_201_CREATED)
+			self.assertEqual(detalle_response.data["cita"]["direccion_cita"], "-17.7833,-63.1821")
+			self.assertEqual(detalle_response.data["orden"], 1)
+
+		def test_admin_can_assign_domicilio_pedido_to_route(self):
+			_, ruta = self._crear_unidad_y_ruta()
+
+			detalle_response = self.client.post(
+				f"/api/rutas-programadas/{ruta['id_ruta']}/detalle/",
+				{
+					"id_pedido": self.pedido_domicilio.id_pedido,
+					"orden": 1,
+					"hora_estimada": "08:30:00",
+				},
+				format="json",
+			)
+			self.assertEqual(detalle_response.status_code, status.HTTP_201_CREATED)
+			self.assertEqual(detalle_response.data["tipo_referencia"], "PEDIDO")
+			self.assertEqual(detalle_response.data["pedido"]["id_pedido"], self.pedido_domicilio.id_pedido)
+			self.assertEqual(detalle_response.data["pedido"]["direccion_entrega"], "-17.7799,-63.1777")
+			self.assertIsNone(detalle_response.data["cita"])
+
+		def test_admin_can_assign_pedido_ligado_a_cita_and_preserves_context(self):
+			_, ruta = self._crear_unidad_y_ruta()
+
+			detalle_response = self.client.post(
+				f"/api/rutas-programadas/{ruta['id_ruta']}/detalle/",
+				{
+					"id_pedido": self.pedido_ligado.id_pedido,
+					"orden": 1,
+				},
+				format="json",
+			)
+			self.assertEqual(detalle_response.status_code, status.HTTP_201_CREATED)
+			self.assertEqual(detalle_response.data["pedido"]["id_pedido"], self.pedido_ligado.id_pedido)
+			self.assertEqual(detalle_response.data["cita"]["id_cita"], self.cita_domicilio.id_cita)
+
+		def test_cannot_assign_clinica_cita_to_route(self):
+		_, ruta = self._crear_unidad_y_ruta()
+
+		response = self.client.post(
+			f"/api/rutas-programadas/{ruta['id_ruta']}/detalle/",
+			{
+				"id_cita": self.cita_clinica.id_cita,
+				"orden": 1,
+			},
+			format="json",
+		)
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertIn("id_cita", response.data)
+
+	def test_veterinario_can_view_own_routes_and_status_change_creates_seguimiento(self):
+		_, ruta = self._crear_unidad_y_ruta()
+		detalle = self.client.post(
+			f"/api/rutas-programadas/{ruta['id_ruta']}/detalle/",
+			{
+				"id_cita": self.cita_domicilio.id_cita,
+				"orden": 1,
+			},
+			format="json",
+		)
+		self.assertEqual(detalle.status_code, status.HTTP_201_CREATED)
+
+		self.client.force_login(self.veterinario)
+		mis_rutas = self.client.get(f"/api/mis-rutas/?fecha={self.fecha.isoformat()}")
+		self.assertEqual(mis_rutas.status_code, status.HTTP_200_OK)
+		self.assertEqual(len(mis_rutas.data), 1)
+		self.assertEqual(mis_rutas.data[0]["id_ruta"], ruta["id_ruta"])
+
+		update = self.client.patch(
+			f"/api/detalle-ruta/{detalle.data['id_detalle_ruta']}/",
+			{"estado": "EN_CAMINO"},
+			format="json",
+		)
+		self.assertEqual(update.status_code, status.HTTP_200_OK)
+		self.assertEqual(update.data["estado"], "EN_CAMINO")
+
+		seguimiento = Seguimiento.objects.get(cita=self.cita_domicilio, tipo_seguimiento="RUTA")
+		self.assertEqual(seguimiento.estado_actual, "EN_CAMINO")
+		self.assertEqual(seguimiento.descripcion, "Veterinario en camino al domicilio")
+
+
+@override_settings(BITACORA_SECRET_KEYS=[FERNET_TEST_KEY])
+class UnidadMovilAsignacionTests(APITestCase):
+	def setUp(self):
+		self.vet = Veterinaria.objects.create(
+			nombre="Vet Logistica",
+			slug="vet-logistica",
+			nit="906",
+			correo="logistica@example.com",
+		)
+		self.other_vet = Veterinaria.objects.create(
+			nombre="Vet Externa",
+			slug="vet-externa",
+			nit="907",
+			correo="externa@example.com",
+		)
+		self.rol_admin = Rol.objects.create(nombre=RoleEnum.ADMIN.value, descripcion="Admin")
+		self.rol_veterinario = Rol.objects.create(
+			nombre=RoleEnum.VETERINARIAN.value,
+			descripcion="Veterinario",
+		)
+		self.rol_cliente = Rol.objects.create(nombre=RoleEnum.CLIENT.value, descripcion="Cliente")
+
+		self.admin = User.objects.create(
+			correo="admin-logistica@example.com",
+			role=self.rol_admin,
+			veterinaria=self.vet,
+			is_active=True,
+			is_staff=True,
+			is_superuser=True,
+		)
+		self.veterinario_a = User.objects.create(
+			correo="vet-a-logistica@example.com",
+			role=self.rol_veterinario,
+			veterinaria=self.vet,
+			is_active=True,
+		)
+		self.veterinario_b = User.objects.create(
+			correo="vet-b-logistica@example.com",
+			role=self.rol_veterinario,
+			veterinaria=self.vet,
+			is_active=True,
+		)
+		self.veterinario_externo = User.objects.create(
+			correo="vet-externo@example.com",
+			role=self.rol_veterinario,
+			veterinaria=self.other_vet,
+			is_active=True,
+		)
+		self.cliente_user = User.objects.create(
+			correo="cliente-logistica@example.com",
+			role=self.rol_cliente,
+			veterinaria=self.vet,
+			is_active=True,
+		)
+
+		self.unidad = UnidadMovil.objects.create(
+			nombre="Movil Logistica 01",
+			placa="LOG-101",
+			descripcion="Unidad para pruebas",
+			veterinaria=self.vet,
+			estado=True,
+		)
+		self.fecha = timezone.localdate() + timedelta(days=1)
+
+	def _build_payload(self, **overrides):
+		payload = {
+			"id_unidad": self.unidad.id_unidad,
+			"zona_nombre": "Zona Norte",
+			"zona_descripcion": "Cobertura norte",
+			"fecha_inicio": self.fecha.isoformat(),
+			"fecha_fin": self.fecha.isoformat(),
+			"hora_inicio": "08:00:00",
+			"hora_fin": "12:00:00",
+			"estado": True,
+			"personal": [
+				{
+					"id_usuario": self.veterinario_a.id_usuario,
+					"rol_operativo": "VETERINARIO",
+					"es_responsable": True,
+					"estado": True,
+				},
+				{
+					"id_usuario": self.veterinario_b.id_usuario,
+					"rol_operativo": "VETERINARIO",
+					"es_responsable": False,
+					"estado": True,
+				},
+			],
+		}
+		payload.update(overrides)
+		return payload
+
+	def test_can_create_assignment_with_multiple_veterinarians(self):
+		self.client.force_login(self.admin)
+
+		response = self.client.post(
+			"/api/unidades-moviles/asignaciones/",
+			self._build_payload(),
+			format="json",
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+		self.assertEqual(response.data["id_unidad"], self.unidad.id_unidad)
+		self.assertEqual(response.data["zona_nombre"], "Zona Norte")
+		self.assertEqual(len(response.data["personal"]), 2)
+		self.assertTrue(any(item["es_responsable"] for item in response.data["personal"]))
+		self.assertEqual(UnidadMovilAsignacion.objects.count(), 1)
+		self.assertEqual(UnidadMovilAsignacionPersonal.objects.count(), 2)
+
+	def test_rejects_overlapping_assignment_for_same_personnel(self):
+		self.client.force_login(self.admin)
+		first = self.client.post(
+			"/api/unidades-moviles/asignaciones/",
+			self._build_payload(),
+			format="json",
+		)
+		self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+		other_unit = UnidadMovil.objects.create(
+			nombre="Movil Logistica 02",
+			placa="LOG-102",
+			descripcion="Unidad secundaria",
+			veterinaria=self.vet,
+			estado=True,
+		)
+		response = self.client.post(
+			"/api/unidades-moviles/asignaciones/",
+			self._build_payload(
+				id_unidad=other_unit.id_unidad,
+				zona_nombre="Zona Sur",
+				hora_inicio="10:00:00",
+				hora_fin="13:00:00",
+				personal=[
+					{
+						"id_usuario": self.veterinario_a.id_usuario,
+						"rol_operativo": "VETERINARIO",
+						"es_responsable": True,
+						"estado": True,
+					}
+				],
+			),
+			format="json",
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertIn("personal", response.data)
+
+	def test_rejects_personnel_from_other_tenant(self):
+		self.client.force_login(self.admin)
+
+		response = self.client.post(
+			"/api/unidades-moviles/asignaciones/",
+			self._build_payload(
+				personal=[
+					{
+						"id_usuario": self.veterinario_a.id_usuario,
+						"rol_operativo": "VETERINARIO",
+						"es_responsable": True,
+						"estado": True,
+					},
+					{
+						"id_usuario": self.veterinario_externo.id_usuario,
+						"rol_operativo": "VETERINARIO",
+						"es_responsable": False,
+						"estado": True,
+					},
+				],
+			),
+			format="json",
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertIn("personal", response.data)
+
+	def test_current_assignment_endpoint_returns_active_assignment(self):
+		self.client.force_login(self.admin)
+		create = self.client.post(
+			"/api/unidades-moviles/asignaciones/",
+			self._build_payload(),
+			format="json",
+		)
+		self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+
+		response = self.client.get(
+			f"/api/unidades-moviles/{self.unidad.id_unidad}/asignacion-actual/?fecha={self.fecha.isoformat()}"
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.data["id_unidad"], self.unidad.id_unidad)
+		self.assertEqual(len(response.data["personal"]), 2)
+
+	def test_existing_route_flow_still_works_after_assignment_exists(self):
+		self.client.force_login(self.admin)
+		create_assignment = self.client.post(
+			"/api/unidades-moviles/asignaciones/",
+			self._build_payload(),
+			format="json",
+		)
+		self.assertEqual(create_assignment.status_code, status.HTTP_201_CREATED)
+
+		ruta_response = self.client.post(
+			"/api/rutas-programadas/",
+			{
+				"nombre": "Ruta Compatibilidad",
+				"fecha": self.fecha.isoformat(),
+				"estado": "PROGRAMADA",
+				"id_unidad": self.unidad.id_unidad,
+				"id_veterinario": self.veterinario_a.id_usuario,
+			},
+			format="json",
+		)
+
+		self.assertEqual(ruta_response.status_code, status.HTTP_201_CREATED)
+		self.assertEqual(ruta_response.data["unidad"]["id_unidad"], self.unidad.id_unidad)
